@@ -1,2 +1,2 @@
-# node-vpk
-Open, Search, Extract and Create VPKs on the Node.js platform 
+# node-vvpk
+Open, Search, Extract and Create Valve VPKs on the Node.js platform 

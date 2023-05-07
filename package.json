@@ -1,0 +1,29 @@
+{
+  "name": "node-vvpk",
+  "version": "1.0.0",
+  "description": "A library to manage Valve Pak files",
+  "author": "Matthew D <mpdtechpro@gmail.com>",
+  "license": "MIT",
+  "dependencies": {
+    "spark-md5": "^3.0.2"
+  },
+  "devDependencies": {
+    "@types/node": "^18.16.2",
+    "@types/spark-md5": "^3.0.2",
+    "@typescript-eslint/eslint-plugin": "^5.59.1",
+    "@typescript-eslint/parser": "^5.59.1",
+    "typescript": "^5.0.4"
+  },
+  "scripts": {
+    "build": "npx tsc",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "files": ["dist", "LICENSE", "package.json"],
+  "type": "commonjs",
+  "main": "dist/index.js",
+  "exports": {
+    "types": "./dist/index.d.ts",
+    "require": "./dist/index.js"
+  },
+  "types": "dist/index.d.ts"
+}
