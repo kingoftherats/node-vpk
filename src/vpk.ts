@@ -15,7 +15,7 @@ export class Vpk {
     static readonly FILE_TEXT_ENCODING: string = 'utf-8';
 
     /** A constant header component part of all v1 and v2 Valve VPKs */
-    private readonly MAGIC: number = 0x55aa1234;
+    static readonly MAGIC: number = 0x55aa1234;
 
     /** The target version of the VPK (1|2) */
     private _version: number;
@@ -215,79 +215,50 @@ export class Vpk {
     static fromFile(absFilePath: string): Vpk {
         const vpk: Vpk = new Vpk();
 
-        validateReadFileOrDirectoryPath(absFilePath);
+        validateReadFileOrDirectoryPath(absFilePath); 
 
-        let pakPos: number = 0;
-        let sourceBuf: Buffer = Buffer.alloc(12);
-        let pakFd: number | undefined = undefined;
-        try {
-            pakFd = fs.openSync(absFilePath as PathLike, 'r');
-            pakPos += fs.readSync(pakFd, sourceBuf, 0, 12, null);
+        const indexFromFileResult: IndexFromFileResult = indexFromFile(absFilePath);
+        vpk.setVersion(indexFromFileResult.vpkVersion);
 
-            const magic: number = sourceBuf.readUint32LE(0);
-            if (magic !== vpk.MAGIC)
-                throw new Error('File missing header magic');
-
-            const version: number = sourceBuf.readUint32LE(4);
-            vpk.setVersion(version);
-
-            const treeLength: number = sourceBuf.readUint32LE(8);
-
-            let headerLength: number = 12;
-
-            let embedChunkLength: number | undefined = undefined;
-            let chunkHashesLength: number | undefined = undefined;
-            let hashesLength: number | undefined = undefined;
-            /*let signatureLength: number | undefined = undefined;
-            let treeChecksum: string | undefined = undefined;
-            let chunkHashesChecksum: string | undefined = undefined;
-            let fileChecksum: string | undefined = undefined;*/
-            if (version === 2) {
-                headerLength = 28;
-                sourceBuf = Buffer.alloc(16);
-                pakPos += fs.readSync(pakFd, sourceBuf, 0, 16, null);
-
-                embedChunkLength = sourceBuf.readUint32LE(0);
-                chunkHashesLength = sourceBuf.readUint32LE(4);
-                hashesLength = sourceBuf.readUint32LE(8);
-                //signatureLength = sourceBuf.readUint32LE(12);
-
-                if (hashesLength !== 48) 
-                    throw new Error('Header hashes length mismatch');
-
-                pakPos += treeLength + embedChunkLength + chunkHashesLength;
-
-                /*sourceBuf = Buffer.alloc(16);
-
-                pakPos += fs.readSync(pakFd, sourceBuf, 0, 16, pakPos);
-                treeChecksum = sourceBuf.toString('utf-8');
-
-                pakPos += fs.readSync(pakFd, sourceBuf, 0, 16, pakPos);
-                chunkHashesChecksum = sourceBuf.toString('utf-8');
-
-                pakPos += fs.readSync(pakFd, sourceBuf, 0, 16, pakPos);
-                fileChecksum = sourceBuf.toString('utf-8');*/
-            }
-
-            const fileIndexTree: any = getFileIndexTree(pakFd, headerLength, treeLength, (treeLength + headerLength), Vpk.FILE_TEXT_ENCODING as BufferEncoding);
-            fs.closeSync(pakFd);
-
-            for (const ext in fileIndexTree) {
-                for (const relPath in fileIndexTree[ext]) {
-                    for (let i = 0; i < fileIndexTree[ext][relPath].length; i++) {
-                        const leaf = fileIndexTree[ext][relPath][i] as IndexTreeLeaf;
-                        vpk.addFile({ extension: ext, relPath: relPath, extlessFileName: leaf.fileName,
-                            dataSource: { absolutePath: absFilePath, offset: leaf.metadata.archiveOffset, length: leaf.metadata.fileLength } as FileChunk });
-                    }
+        const fileIndexTree = indexFromFileResult.fileIndexTree as any;
+        for (const ext in fileIndexTree) {
+            for (const relPath in fileIndexTree[ext]) {
+                for (let i = 0; i < fileIndexTree[ext][relPath].length; i++) {
+                    const leaf = fileIndexTree[ext][relPath][i] as IndexTreeLeaf;
+                    vpk.addFile({ extension: ext, relPath: relPath, extlessFileName: leaf.fileName,
+                        dataSource: { absolutePath: absFilePath, offset: leaf.metadata.archiveOffset, length: leaf.metadata.fileLength } as FileChunk });
                 }
             }
-        } catch (e) {
-            if (pakFd)
-                fs.closeSync(pakFd);
-            throw e;
         }
 
         return vpk
+    }
+
+    /**
+     * Get the pak'ed file index from a VPK file
+     * @param absFilePath the asbolute path to the file
+     * @returns an array of relative paths of any pak'ed files and their metadata
+     */
+    static indexFromFile(absFilePath: string): IndexEntry[] {
+        validateReadFileOrDirectoryPath(absFilePath); 
+
+        const indexFromFileResult: IndexFromFileResult = indexFromFile(absFilePath);
+        const fileIndexTree = indexFromFileResult.fileIndexTree as any;
+
+        const retArr: IndexEntry[] = [];
+        for (const ext in fileIndexTree) {
+            for (const relPath in fileIndexTree[ext]) {
+                for (let i = 0; i < fileIndexTree[ext][relPath].length; i++) {
+                    const leaf = fileIndexTree[ext][relPath][i] as IndexTreeLeaf;
+                    retArr.push({
+                        relPath: relPath.trim() != '' ? relPath + '/' + leaf.fileName + '.' + ext : leaf.fileName + '.' + ext,
+                        metadata: leaf.metadata
+                    } as IndexEntry);
+                }
+            }
+        }
+
+        return retArr;
     }
 
     /**
@@ -315,7 +286,7 @@ export class Vpk {
 
             // write VPK v1 header
             let tmpBuf: Buffer = Buffer.alloc(12);
-            tmpBuf.writeUInt32LE(this.MAGIC, 0);
+            tmpBuf.writeUInt32LE(Vpk.MAGIC, 0);
             tmpBuf.writeUInt32LE(this._version, 4);
             tmpBuf.writeUInt32LE(this._treeLength, 8);
             fs.writeSync(pakFd, tmpBuf);
@@ -703,6 +674,74 @@ const readNextStringFromFile = (fd: number, position: number, stringEncoding: Bu
 };
 
 /**
+ * Reads the header from a VPK file and generates the file index tree
+ * @param absFilePath the absolute path to the target file
+ * @returns a result containing the file index tree and the VPK version
+ */
+const indexFromFile = (absFilePath: string): IndexFromFileResult => {
+    let pakPos: number = 0;
+    let sourceBuf: Buffer = Buffer.alloc(12);
+    let pakFd: number | undefined = undefined;
+    try {
+        pakFd = fs.openSync(absFilePath as PathLike, 'r');
+        pakPos += fs.readSync(pakFd, sourceBuf, 0, 12, null);
+
+        const magic: number = sourceBuf.readUint32LE(0);
+        if (magic !== Vpk.MAGIC)
+            throw new Error('File missing header magic');
+
+        const version: number = sourceBuf.readUint32LE(4);
+
+        const treeLength: number = sourceBuf.readUint32LE(8);
+
+        let headerLength: number = 12;
+
+        let embedChunkLength: number | undefined = undefined;
+        let chunkHashesLength: number | undefined = undefined;
+        let hashesLength: number | undefined = undefined;
+        /*let signatureLength: number | undefined = undefined;
+        let treeChecksum: string | undefined = undefined;
+        let chunkHashesChecksum: string | undefined = undefined;
+        let fileChecksum: string | undefined = undefined;*/
+        if (version === 2) {
+            headerLength = 28;
+            sourceBuf = Buffer.alloc(16);
+            pakPos += fs.readSync(pakFd, sourceBuf, 0, 16, null);
+
+            embedChunkLength = sourceBuf.readUint32LE(0);
+            chunkHashesLength = sourceBuf.readUint32LE(4);
+            hashesLength = sourceBuf.readUint32LE(8);
+            //signatureLength = sourceBuf.readUint32LE(12);
+
+            if (hashesLength !== 48) 
+                throw new Error('Header hashes length mismatch');
+
+            pakPos += treeLength + embedChunkLength + chunkHashesLength;
+
+            /*sourceBuf = Buffer.alloc(16);
+
+            pakPos += fs.readSync(pakFd, sourceBuf, 0, 16, pakPos);
+            treeChecksum = sourceBuf.toString('utf-8');
+
+            pakPos += fs.readSync(pakFd, sourceBuf, 0, 16, pakPos);
+            chunkHashesChecksum = sourceBuf.toString('utf-8');
+
+            pakPos += fs.readSync(pakFd, sourceBuf, 0, 16, pakPos);
+            fileChecksum = sourceBuf.toString('utf-8');*/
+        }
+
+        const fileIndexTree: any = getFileIndexTree(pakFd, headerLength, treeLength, (treeLength + headerLength), Vpk.FILE_TEXT_ENCODING as BufferEncoding);
+        fs.closeSync(pakFd);
+
+        return { fileIndexTree: fileIndexTree, vpkVersion: version } as IndexFromFileResult;
+    } catch (e) {
+        if (pakFd)
+            fs.closeSync(pakFd);
+        throw e;
+    }
+}
+
+/**
  * Write to a file on disk with data sourced from a file elsewhere on disk (any existing file will be overwritten)
  * @param absTargetFilePath the absolute path to the file to write/create
  * @param absSourceFilePath the absolute path to the source file to read
@@ -777,7 +816,9 @@ const writeFileFromBuffer = (absTargetFilePath: string, sourceBuffer: Buffer): v
  * Result from reading a string from a VPK file
  */
 interface FileStringReadResult {
+    /** The string that was read or '' if nothing read */
     result: string,
+    /** The number of bytes that was read */
     bytesRead: number
 }
 
@@ -785,10 +826,16 @@ interface FileStringReadResult {
  * File metadata for a file in VPK
  */
 interface FileMetadata {
+    /** The CRC32 of the file */
     crc32: number,
     preloadLength: number
     archiveIndex: number,
+    /**
+     * The offset of the file data within the VPK file, relative to the end position of the header data + file index
+     * (add the header and tree length to this for the actual position with the VPK file)
+     * */
     archiveOffset: number,
+    /** The length of the file data in bytes */
     fileLength: number,
     suffix: number
 }
@@ -811,17 +858,43 @@ interface TreeLeaf {
  * A leaf record within a VPK index tree
  */
 interface IndexTreeLeaf {
+    /** The file name minux the extension */
     fileName: string,
+    /** The file metadata */
     metadata: FileMetadata
 }
 
 /**
- * A file within a VPK
+ * A result to contain a parsed file index from and version number from a VPK file
+ */
+interface IndexFromFileResult {
+    /** The file index tree for the VPK */
+    fileIndexTree: any,
+    /** The VPK version number */
+    vpkVersion: number
+}
+
+/**
+ * A pak'ed file entry
+ */
+export interface IndexEntry {
+    /** The relative path to the file from the root */
+    relPath: string,
+    /** The file metadata */
+    metadata: FileMetadata
+}
+
+/**
+ * A (pak'd) file within a VPK
  */
 export interface FileInPak {
+    /** The file extension */
     extension: string,
+    /** The relative path to the file from the root */
     relPath: string,
+    /** The file name minus the extension */
     extlessFileName: string,
+    /** The data source for the file. Can be an absolute path to another file on disk, a file chunk from a file on disk or a buffer with data. */
     dataSource: String | FileChunk | Buffer
 }
 
