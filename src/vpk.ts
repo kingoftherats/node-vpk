@@ -40,8 +40,8 @@ export class Vpk {
     }
 
     /**
-     * Get the current VPK version
-     * @returns the current VPK version
+     * Get the target version (1|2) of the VPK
+     * @returns the target VPK version
      */
     getVersion(): number {
         return this._version;
@@ -591,11 +591,11 @@ export class Vpk {
     /**
      * Save the contents (extract) the VPK to a directory in the file system. Existing files will be overwritten.
      * @param absDirPath The absolute path to the target directory
-     * @param makeParentDirs True to create the necessary parent directory structure if not present, false to error out if the proper parent directory structure doesn't exist
+     * @param createParentDirs True to create the necessary parent directory structure if not present, false to error out if the proper parent directory structure doesn't exist
      */
-    extractToDirectory(absDirPath: string, makeParentDirs: boolean): void {
+    extractToDirectory(absDirPath: string, createParentDirs: boolean = true): void {
         if (!fs.existsSync(absDirPath)) {
-            if (makeParentDirs)
+            if (createParentDirs)
                 fs.mkdirSync(absDirPath, { recursive: true });
             else
                 throw new Error(`The directory at ${absDirPath} is inaccessible or does not exist.`);
@@ -964,7 +964,7 @@ interface FileStringReadResult {
 /**
  * File metadata for a file in VPK
  */
-interface FileMetadata {
+export interface FileMetadata {
     /** The CRC32 of the file */
     crc32: number,
     preloadLength: number
@@ -1058,8 +1058,8 @@ export interface FileInPak {
 export interface FileChunk {
     /** The absolute path to the file on disk */
     absolutePath: string,
-    /** Where to start reading the file chunk */
+    /** Where to start reading (the byte offset) the file chunk */
     offset: number,
-    /** The length of the file chunk */
+    /** The length of the file chunk in bytes */
     length: number
 }
