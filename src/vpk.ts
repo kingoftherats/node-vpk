@@ -5,14 +5,13 @@ import md5 from 'spark-md5';
 //Open issues:
 // ensure support for multi-chunk VPK's with any number of '_'-separated segments (file name contains "_dir") (and word 'english'?)
 //   auto-chunk at a set threshold for creation (people having issues with around 4GB mark?)
-// parameterize path encoding as utf-8 not be used in all setups
 
 /**
  * A VPK package
  */
 export class Vpk {
-    /** The standard encoding for all text-based VPK file portions */
-    static readonly FILE_TEXT_ENCODING: string = 'utf-8';
+    /** The default encoding for file paths */
+    static readonly DEFAULT_FILE_PATH_ENCODING: string = 'utf-8';
 
     /** A constant header component part of all v1 and v2 Valve VPKs */
     static readonly MAGIC: number = 0x55aa1234;
@@ -209,15 +208,16 @@ export class Vpk {
 
     /**
      * Create a VPK from a VPK file
-     * @param absFilePath the asbolute path to the file
+     * @param absFilePath the absolute path to the file
+     * @param pathEncoding the optional file path encoding to use (defaults to utf-8)
      * @returns a VPK
      */
-    static fromFile(absFilePath: string): Vpk {
+    static fromFile(absFilePath: string, pathEncoding: string = Vpk.DEFAULT_FILE_PATH_ENCODING): Vpk {
         const vpk: Vpk = new Vpk();
 
         validateReadFileOrDirectoryPath(absFilePath); 
 
-        const indexFromFileResult: IndexFromFileResult = indexFromFileInternal(absFilePath);
+        const indexFromFileResult: IndexFromFileResult = indexFromFileInternal(absFilePath, pathEncoding as BufferEncoding);
         vpk.setVersion(indexFromFileResult.vpkVersion);
 
         const fileIndexTree = indexFromFileResult.fileIndexTree as any;
@@ -236,13 +236,14 @@ export class Vpk {
 
     /**
      * Get the pak'ed file index from a VPK file
-     * @param absFilePath the asbolute path to the file
+     * @param absFilePath the absolute path to the file
+     * @param pathEncoding the optional file path encoding to use (defaults to utf-8)
      * @returns an array of relative paths of any pak'ed files and their metadata
      */
-    static indexFromFile(absFilePath: string): IndexEntry[] {
+    static indexFromFile(absFilePath: string, pathEncoding: string = Vpk.DEFAULT_FILE_PATH_ENCODING): IndexEntry[] {
         validateReadFileOrDirectoryPath(absFilePath); 
 
-        const indexFromFileResult: IndexFromFileResult = indexFromFileInternal(absFilePath);
+        const indexFromFileResult: IndexFromFileResult = indexFromFileInternal(absFilePath, pathEncoding as BufferEncoding);
         const fileIndexTree = indexFromFileResult.fileIndexTree as any;
 
         const retArr: IndexEntry[] = [];
@@ -264,13 +265,14 @@ export class Vpk {
     /**
      * Verify the integrity of a VPK file
      * @param absFilePath the absolute path to the VPK file on disk
+     * @param pathEncoding the optional file path encoding to use (defaults to utf-8)
      * @returns an array one strings where each string is a unique verification error. The array is empty when no errors are found.
      */
-    static verifyFile(absFilePath: string): string[] {
+    static verifyFile(absFilePath: string, pathEncoding: string = Vpk.DEFAULT_FILE_PATH_ENCODING): string[] {
 
         validateReadFileOrDirectoryPath(absFilePath); 
 
-        const indexFromFileResult: IndexFromFileResult = indexFromFileInternal(absFilePath);
+        const indexFromFileResult: IndexFromFileResult = indexFromFileInternal(absFilePath, pathEncoding as BufferEncoding);
         const fileIndexTree = indexFromFileResult.fileIndexTree as any;
 
         const errorArr: string[] = [];
@@ -387,8 +389,9 @@ export class Vpk {
      * Save the VPK to a file
      * @param absFilePath the absolute path to the target file to create/overwrite
      * @param createParentDirs true to create any necessary parent directories for the file, false to error when the necessary parent directories don't yet exist
+     * @param pathEncoding the optional file path encoding to use (defaults to utf-8)
      */
-    saveToFile(absFilePath: string, createParentDirs: boolean = true): void {
+    saveToFile(absFilePath: string, createParentDirs: boolean = true, pathEncoding: string = Vpk.DEFAULT_FILE_PATH_ENCODING): void {
         const dirPath: string = path.dirname(absFilePath);
 
         const nullTermBuf: Buffer = Buffer.alloc(1);
@@ -429,18 +432,18 @@ export class Vpk {
             let embedChunkLength: number = 0;
 
             for (const ext in this._tree) {
-                pakPos += fs.writeSync(pakFd, Buffer.from(ext, Vpk.FILE_TEXT_ENCODING as BufferEncoding), 0, null, pakPos);
+                pakPos += fs.writeSync(pakFd, Buffer.from(ext, pathEncoding as BufferEncoding), 0, null, pakPos);
                 pakPos += fs.writeSync(pakFd, nullTermBuf, 0, null, pakPos);
 
                 for (const relPath in (this._tree as any)[ext]) {
                     const normRelPath = relPath.split(path.sep).join('/'); // Normalize paths to use forward-slash only
-                    pakPos += fs.writeSync(pakFd, Buffer.from(normRelPath, Vpk.FILE_TEXT_ENCODING as BufferEncoding), 0, null, pakPos);
+                    pakPos += fs.writeSync(pakFd, Buffer.from(normRelPath, pathEncoding as BufferEncoding), 0, null, pakPos);
                     pakPos += fs.writeSync(pakFd, nullTermBuf, 0, null, pakPos);
 
                     const leafList = ((this._tree as any)[ext][relPath] as TreeLeaf[]);
                     for (let i = 0; i < leafList.length; i++) {
                         const treeLeaf: TreeLeaf = leafList[i];
-                        pakPos += fs.writeSync(pakFd, Buffer.from(treeLeaf.fileName, Vpk.FILE_TEXT_ENCODING as BufferEncoding), 0, null, pakPos);
+                        pakPos += fs.writeSync(pakFd, Buffer.from(treeLeaf.fileName, pathEncoding as BufferEncoding), 0, null, pakPos);
                         pakPos += fs.writeSync(pakFd, nullTermBuf, 0, null, pakPos);
 
                         const metadataOffset: number = pakPos;
@@ -802,9 +805,10 @@ const readNextStringFromFile = (fd: number, position: number, stringEncoding: Bu
 /**
  * Reads the header from a VPK file and generates the file index tree
  * @param absFilePath the absolute path to the target file
+ * @param pathEncoding the file path encoding to use
  * @returns a result containing the file index tree and the VPK version
  */
-const indexFromFileInternal = (absFilePath: string): IndexFromFileResult => {
+const indexFromFileInternal = (absFilePath: string, pathEncoding: BufferEncoding): IndexFromFileResult => {
     let pakPos: number = 0;
     let sourceBuf: Buffer = Buffer.alloc(12);
     let pakFd: number | undefined = undefined;
@@ -863,7 +867,7 @@ const indexFromFileInternal = (absFilePath: string): IndexFromFileResult => {
             } as VpkV2Metadata;
         }
 
-        const fileIndexTree: any = getFileIndexTree(pakFd, headerLength, treeLength, (treeLength + headerLength), Vpk.FILE_TEXT_ENCODING as BufferEncoding);
+        const fileIndexTree: any = getFileIndexTree(pakFd, headerLength, treeLength, (treeLength + headerLength), pathEncoding);
         fs.closeSync(pakFd);
 
         return { fileIndexTree: fileIndexTree, vpkVersion: version, vpkTreeLength: treeLength, vpkV2Metadata: vpkV2Metadata } as IndexFromFileResult;
