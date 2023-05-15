@@ -5,7 +5,6 @@ import md5 from 'spark-md5';
 //Open issues:
 // ensure support for multi-chunk VPK's with any number of '_'-separated segments (file name contains "_dir") (and word 'english'?)
 //   auto-chunk at a set threshold for creation (people having issues with around 4GB mark?)
-// add check for respawn VPK format --> version = 0x00030002 -> Respawn uses customized vpk format which this library does not support.
 // parameterize path encoding as utf-8 not be used in all setups
 
 /**
@@ -818,6 +817,9 @@ const indexFromFileInternal = (absFilePath: string): IndexFromFileResult => {
             throw new Error('File missing header magic');
 
         const version: number = sourceBuf.readUInt32LE(4);
+
+        if (version === 0x00030002)
+            throw new Error('Respawn uses a customized VPK format which this library does not support.');
 
         const treeLength: number = sourceBuf.readUInt32LE(8);
 
