@@ -2,10 +2,11 @@ import fs, { PathLike } from 'fs';
 import path from 'path';
 import md5 from 'spark-md5';
 
-//Open issues from parent project:
-// test and warn if attempted VPK creation over 4GB is problematic
+//Open issues:
 // ensure support for multi-chunk VPK's with any number of '_'-separated segments (file name contains "_dir") (and word 'english'?)
+//   auto-chunk at a set threshold for creation (people having issues with around 4GB mark?)
 // add check for respawn VPK format --> version = 0x00030002 -> Respawn uses customized vpk format which this library does not support.
+// parameterize path encoding as utf-8 not be used in all setups
 
 /**
  * A VPK package
@@ -217,7 +218,7 @@ export class Vpk {
 
         validateReadFileOrDirectoryPath(absFilePath); 
 
-        const indexFromFileResult: IndexFromFileResult = indexFromFile(absFilePath);
+        const indexFromFileResult: IndexFromFileResult = indexFromFileInternal(absFilePath);
         vpk.setVersion(indexFromFileResult.vpkVersion);
 
         const fileIndexTree = indexFromFileResult.fileIndexTree as any;
@@ -242,7 +243,7 @@ export class Vpk {
     static indexFromFile(absFilePath: string): IndexEntry[] {
         validateReadFileOrDirectoryPath(absFilePath); 
 
-        const indexFromFileResult: IndexFromFileResult = indexFromFile(absFilePath);
+        const indexFromFileResult: IndexFromFileResult = indexFromFileInternal(absFilePath);
         const fileIndexTree = indexFromFileResult.fileIndexTree as any;
 
         const retArr: IndexEntry[] = [];
@@ -262,6 +263,128 @@ export class Vpk {
     }
 
     /**
+     * Verify the integrity of a VPK file
+     * @param absFilePath the absolute path to the VPK file on disk
+     * @returns an array one strings where each string is a unique verification error. The array is empty when no errors are found.
+     */
+    static verifyFile(absFilePath: string): string[] {
+
+        validateReadFileOrDirectoryPath(absFilePath); 
+
+        const indexFromFileResult: IndexFromFileResult = indexFromFileInternal(absFilePath);
+        const fileIndexTree = indexFromFileResult.fileIndexTree as any;
+
+        const errorArr: string[] = [];
+        for (const ext in fileIndexTree) {
+            for (const relPath in fileIndexTree[ext]) {
+                for (let i = 0; i < fileIndexTree[ext][relPath].length; i++) {
+                    const leaf = fileIndexTree[ext][relPath][i] as IndexTreeLeaf;
+                    const givenCrc: number = leaf.metadata.crc32;
+                    let newCrc: number = 0;
+
+                    //Check the stored CRC32 checksum against a freshly computed one
+                    let pakFd: number | undefined = undefined;
+                    try {
+                        pakFd = fs.openSync(absFilePath as PathLike, 'r');
+                        let pakPos: number = leaf.metadata.archiveOffset;
+
+                        const sourceBuf: Buffer = Buffer.alloc(16000);
+                        let totalBytesRead: number = 0;
+                        let bytesRead: number = fs.readSync(pakFd, sourceBuf, 0, Math.min(16000, leaf.metadata.fileLength), pakPos);
+                        while (bytesRead !== 0) {
+                            const trimmedSourceBuf: Buffer = sourceBuf.subarray(0, bytesRead);
+                            newCrc = crc32(newCrc, trimmedSourceBuf, bytesRead, 0);
+                            totalBytesRead += bytesRead;
+                            pakPos += bytesRead;
+                            bytesRead = fs.readSync(pakFd, sourceBuf, 0, Math.min(16000, leaf.metadata.fileLength - totalBytesRead), pakPos);
+                        }
+                        fs.closeSync(pakFd);
+                    } catch (e) {
+                        if (pakFd)
+                            fs.closeSync(pakFd);
+                        throw e;
+                    }
+
+                    const newCrcStr: string = (new Uint32Array([newCrc]))[0].toString(16);
+                    const givenCrcStr: string = givenCrc.toString(16);
+                    if (givenCrcStr !== newCrcStr)
+                        errorArr.push(`${relPath.trim() !== '' ? relPath + '/' : ''}${leaf.fileName}.${ext} CRC32 mismatch. Received ${givenCrcStr} but calculated ${newCrcStr}.`);
+                }
+            }
+        }
+
+        //Also check MD5 checksums for v2 VPKs
+        if (indexFromFileResult.vpkV2Metadata) {
+            const newFileChecksum: md5.ArrayBuffer = new md5.ArrayBuffer();
+            const newTreeChecksum: md5.ArrayBuffer = new md5.ArrayBuffer();
+            const newChunkHashesChecksum: md5.ArrayBuffer = new md5.ArrayBuffer();
+
+            let newTreeChecksumStr: string | undefined = undefined;
+            let newChunkHashesChecksumStr: string | undefined = undefined;
+
+            let pakFd: number | undefined = undefined;
+            try {
+                pakFd = fs.openSync(absFilePath as PathLike, 'r');
+
+                let readBuffer: Buffer = Buffer.alloc(28);
+                fs.readSync(pakFd, readBuffer, 0, 28, 0);
+                let pakPos: number = 28;
+
+                newFileChecksum.append(readBuffer);
+
+                const chunkSize = 2 ** 14;
+
+                let limit = pakPos + indexFromFileResult.vpkTreeLength;
+                readBuffer = Buffer.alloc(chunkSize);
+                while (pakPos < limit) {
+                    const bytesRead = fs.readSync(pakFd, readBuffer, 0, Math.min(chunkSize, limit - pakPos), pakPos);
+                    const trimmedReadBuffer: Buffer = readBuffer.subarray(0, bytesRead);
+                    pakPos += bytesRead;
+
+                    newFileChecksum.append(trimmedReadBuffer);
+                    newTreeChecksum.append(trimmedReadBuffer);
+                }
+
+                limit = pakPos + indexFromFileResult.vpkV2Metadata.embedChunkLength;
+                while (pakPos < limit) {
+                    const bytesRead = fs.readSync(pakFd, readBuffer, 0, Math.min(chunkSize, limit - pakPos), pakPos);
+                    const trimmedReadBuffer: Buffer = readBuffer.subarray(0, bytesRead);
+                    pakPos += bytesRead;
+
+                    newFileChecksum.append(trimmedReadBuffer);
+                }
+
+                newTreeChecksumStr = newTreeChecksum.end();
+                newChunkHashesChecksumStr = newChunkHashesChecksum.end();
+
+                const newTreeChecksumBuf: Buffer = Buffer.from(newTreeChecksumStr, 'hex');
+                const newChunkHashesChecksumBuf = Buffer.from(newChunkHashesChecksumStr, 'hex');
+
+                newFileChecksum.append(newTreeChecksumBuf);
+                newFileChecksum.append(newChunkHashesChecksumBuf);
+
+                fs.closeSync(pakFd);
+            } catch (e) {
+                if (pakFd)
+                    fs.closeSync(pakFd);
+                throw e;
+            }
+
+            const newFileChecksumStr: string = newFileChecksum.end();
+            if (newFileChecksumStr !== indexFromFileResult.vpkV2Metadata.fileChecksum)
+                errorArr.push(`Pak file checksum mismatch. Received ${indexFromFileResult.vpkV2Metadata.fileChecksum} but calculated ${newFileChecksumStr}.`);
+
+            if (newTreeChecksumStr !== indexFromFileResult.vpkV2Metadata.treeChecksum)
+                errorArr.push(`Pak file tree checksum mismatch. Received ${indexFromFileResult.vpkV2Metadata.treeChecksum} but calculated ${newTreeChecksumStr}.`);
+
+            if (newChunkHashesChecksumStr !== indexFromFileResult.vpkV2Metadata.chunkHashesChecksum)
+                errorArr.push(`Pak file chunk hashes checksum mismatch. Received ${indexFromFileResult.vpkV2Metadata.chunkHashesChecksum} but calculated ${newChunkHashesChecksumStr}.`);
+        }
+
+        return errorArr;
+    }
+
+    /**
      * Save the VPK to a file
      * @param absFilePath the absolute path to the target file to create/overwrite
      * @param createParentDirs true to create any necessary parent directories for the file, false to error when the necessary parent directories don't yet exist
@@ -270,7 +393,7 @@ export class Vpk {
         const dirPath: string = path.dirname(absFilePath);
 
         const nullTermBuf: Buffer = Buffer.alloc(1);
-        nullTermBuf.writeUint8(0);
+        nullTermBuf.writeUInt8(0);
 
         if (createParentDirs) {
             if (!fs.existsSync(dirPath)) {
@@ -300,7 +423,7 @@ export class Vpk {
                 tmpBuf.writeUInt32LE(48, 8);
                 tmpBuf.writeUInt32LE(0, 12);
                 fs.writeSync(pakFd, tmpBuf);
-                pakPos += 16;
+                pakPos = 28;
             }
 
             let dataOffset: number = this._headerLength + this._treeLength;
@@ -334,14 +457,16 @@ export class Vpk {
                             let sourceFd: number | undefined = undefined;
                             try {
                                 sourceFd = fs.openSync(treeLeaf.absoluteFilePath as PathLike, 'r');
+                                let sourcePos: number = 0;
 
                                 const sourceBuffer = Buffer.alloc(16000);
-                                let bytesRead: number = fs.readSync(sourceFd, sourceBuffer, 0, 16000, null);
+                                let bytesRead: number = fs.readSync(sourceFd, sourceBuffer, 0, 16000, sourcePos);
                                 while (bytesRead !== 0) {
                                     const trimmedSourceBuffer: Buffer = sourceBuffer.subarray(0, bytesRead);
                                     checksum = crc32(checksum, trimmedSourceBuffer, bytesRead, 0);
                                     pakPos += fs.writeSync(pakFd, trimmedSourceBuffer, 0, null, pakPos);
-                                    bytesRead = fs.readSync(sourceFd, sourceBuffer, 0, 16000, null);
+                                    sourcePos += bytesRead;
+                                    bytesRead = fs.readSync(sourceFd, sourceBuffer, 0, 16000, sourcePos);
                                 }
                                 fs.closeSync(sourceFd);
                             } catch (e) {
@@ -355,16 +480,18 @@ export class Vpk {
                             try {
                                 const fileChunk: FileChunk = treeLeaf.fileChunk as FileChunk;
                                 sourceFd = fs.openSync(fileChunk.absolutePath as PathLike, 'r');
+                                let sourcePos: number = fileChunk.offset;
 
                                 const sourceBuffer = Buffer.alloc(16000);
                                 let totalBytesRead: number = 0;
-                                let bytesRead: number = fs.readSync(sourceFd, sourceBuffer, 0, Math.min(16000, fileChunk.length), fileChunk.offset);
+                                let bytesRead: number = fs.readSync(sourceFd, sourceBuffer, 0, Math.min(16000, fileChunk.length), sourcePos);
                                 while (bytesRead !== 0) {
                                     const trimmedSourceBuffer: Buffer = sourceBuffer.subarray(0, bytesRead);
                                     checksum = crc32(checksum, trimmedSourceBuffer, bytesRead, 0);
                                     pakPos += fs.writeSync(pakFd, trimmedSourceBuffer, 0, null, pakPos);
                                     totalBytesRead += bytesRead;
-                                    bytesRead = fs.readSync(sourceFd, sourceBuffer, 0, Math.min(16000, fileChunk.length - totalBytesRead), null);
+                                    sourcePos += bytesRead;
+                                    bytesRead = fs.readSync(sourceFd, sourceBuffer, 0, Math.min(16000, fileChunk.length - totalBytesRead), sourcePos);
                                 }
                                 fs.closeSync(sourceFd);
                             } catch (e) {
@@ -402,7 +529,7 @@ export class Vpk {
                 pakPos = 12;
 
                 tmpBuf = Buffer.alloc(4);
-                tmpBuf.writeUint32LE(embedChunkLength, 0);
+                tmpBuf.writeUInt32LE(embedChunkLength, 0);
                 pakPos += fs.writeSync(pakFd, tmpBuf, 0, null, pakPos);
 
                 // calculate and write checksums
@@ -618,12 +745,12 @@ const getFileIndexTree = (fd: number, headerLength: number, treeLength: number, 
                 let sourceBuf: Buffer = Buffer.alloc(18);
                 pakPos += fs.readSync(fd, sourceBuf, 0, 18, pakPos);
 
-                const crc32: number = sourceBuf.readUint32LE(0);
+                const crc32: number = sourceBuf.readUInt32LE(0);
                 const preloadLength: number = sourceBuf.readUInt16LE(4);
-                let archiveIndex: number = sourceBuf.readUint16LE(6);
-                const archiveOffset: number = sourceBuf.readUint32LE(8);
-                const fileLength: number = sourceBuf.readUint32LE(12);
-                const suffix: number = sourceBuf.readUint16LE(16);
+                let archiveIndex: number = sourceBuf.readUInt16LE(6);
+                const archiveOffset: number = sourceBuf.readUInt32LE(8);
+                const fileLength: number = sourceBuf.readUInt32LE(12);
+                const suffix: number = sourceBuf.readUInt16LE(16);
 
                 if (suffix !== 0xffff)
                     throw new Error('Error while parsing index');
@@ -644,7 +771,7 @@ const getFileIndexTree = (fd: number, headerLength: number, treeLength: number, 
     }
 
     return tree;
-}
+};
 
 /**
  * Reads the next string from a file (until the next null terminator)
@@ -678,68 +805,72 @@ const readNextStringFromFile = (fd: number, position: number, stringEncoding: Bu
  * @param absFilePath the absolute path to the target file
  * @returns a result containing the file index tree and the VPK version
  */
-const indexFromFile = (absFilePath: string): IndexFromFileResult => {
+const indexFromFileInternal = (absFilePath: string): IndexFromFileResult => {
     let pakPos: number = 0;
     let sourceBuf: Buffer = Buffer.alloc(12);
     let pakFd: number | undefined = undefined;
     try {
         pakFd = fs.openSync(absFilePath as PathLike, 'r');
-        pakPos += fs.readSync(pakFd, sourceBuf, 0, 12, null);
+        pakPos += fs.readSync(pakFd, sourceBuf, 0, 12, 0);
 
-        const magic: number = sourceBuf.readUint32LE(0);
+        const magic: number = sourceBuf.readUInt32LE(0);
         if (magic !== Vpk.MAGIC)
             throw new Error('File missing header magic');
 
-        const version: number = sourceBuf.readUint32LE(4);
+        const version: number = sourceBuf.readUInt32LE(4);
 
-        const treeLength: number = sourceBuf.readUint32LE(8);
+        const treeLength: number = sourceBuf.readUInt32LE(8);
 
         let headerLength: number = 12;
 
-        let embedChunkLength: number | undefined = undefined;
-        let chunkHashesLength: number | undefined = undefined;
-        let hashesLength: number | undefined = undefined;
-        /*let signatureLength: number | undefined = undefined;
-        let treeChecksum: string | undefined = undefined;
-        let chunkHashesChecksum: string | undefined = undefined;
-        let fileChecksum: string | undefined = undefined;*/
+        let vpkV2Metadata: VpkV2Metadata | undefined = undefined;
         if (version === 2) {
             headerLength = 28;
             sourceBuf = Buffer.alloc(16);
-            pakPos += fs.readSync(pakFd, sourceBuf, 0, 16, null);
+            pakPos += fs.readSync(pakFd, sourceBuf, 0, 16, 12);
 
-            embedChunkLength = sourceBuf.readUint32LE(0);
-            chunkHashesLength = sourceBuf.readUint32LE(4);
-            hashesLength = sourceBuf.readUint32LE(8);
-            //signatureLength = sourceBuf.readUint32LE(12);
+            const embedChunkLength: number = sourceBuf.readUInt32LE(0);
+            const chunkHashesLength: number = sourceBuf.readUInt32LE(4);
+            const hashesLength: number = sourceBuf.readUInt32LE(8);
+            const signatureLength: number = sourceBuf.readUInt32LE(12);
 
             if (hashesLength !== 48) 
                 throw new Error('Header hashes length mismatch');
 
             pakPos += treeLength + embedChunkLength + chunkHashesLength;
 
-            /*sourceBuf = Buffer.alloc(16);
+            sourceBuf = Buffer.alloc(16);
 
             pakPos += fs.readSync(pakFd, sourceBuf, 0, 16, pakPos);
-            treeChecksum = sourceBuf.toString('utf-8');
+            const treeChecksum: string = sourceBuf.toString('hex');
 
             pakPos += fs.readSync(pakFd, sourceBuf, 0, 16, pakPos);
-            chunkHashesChecksum = sourceBuf.toString('utf-8');
+            const chunkHashesChecksum: string = sourceBuf.toString('hex');
 
             pakPos += fs.readSync(pakFd, sourceBuf, 0, 16, pakPos);
-            fileChecksum = sourceBuf.toString('utf-8');*/
+            const fileChecksum: string = sourceBuf.toString('hex');
+
+            vpkV2Metadata = {
+                embedChunkLength: embedChunkLength,
+                chunkHashesLength: chunkHashesLength,
+                hashesLength: hashesLength,
+                signatureLength: signatureLength,
+                treeChecksum: treeChecksum, 
+                chunkHashesChecksum: chunkHashesChecksum,
+                fileChecksum: fileChecksum
+            } as VpkV2Metadata;
         }
 
         const fileIndexTree: any = getFileIndexTree(pakFd, headerLength, treeLength, (treeLength + headerLength), Vpk.FILE_TEXT_ENCODING as BufferEncoding);
         fs.closeSync(pakFd);
 
-        return { fileIndexTree: fileIndexTree, vpkVersion: version } as IndexFromFileResult;
+        return { fileIndexTree: fileIndexTree, vpkVersion: version, vpkTreeLength: treeLength, vpkV2Metadata: vpkV2Metadata } as IndexFromFileResult;
     } catch (e) {
         if (pakFd)
             fs.closeSync(pakFd);
         throw e;
     }
-}
+};
 
 /**
  * Write to a file on disk with data sourced from a file elsewhere on disk (any existing file will be overwritten)
@@ -769,15 +900,17 @@ const writeFileFromFileChunk = (absTargetFilePath: string, fileChunk: FileChunk)
     try {
         targetFd = fs.openSync(absTargetFilePath as PathLike, 'w');
         sourceFd = fs.openSync(fileChunk.absolutePath as PathLike, 'r');
+        let sourcePos: number = fileChunk.offset;
 
         const sourceBuffer = Buffer.alloc(16000);
         let totalBytesRead: number = 0;
-        let bytesRead: number = fs.readSync(sourceFd, sourceBuffer, 0, Math.min(16000, fileChunk.length), fileChunk.offset);
+        let bytesRead: number = fs.readSync(sourceFd, sourceBuffer, 0, Math.min(16000, fileChunk.length), sourcePos);
         while (bytesRead !== 0) {
             const trimmedSourceBuffer: Buffer = sourceBuffer.subarray(0, bytesRead);
             fs.writeSync(targetFd, trimmedSourceBuffer);
             totalBytesRead += bytesRead;
-            bytesRead = fs.readSync(sourceFd, sourceBuffer, 0, Math.min(16000, fileChunk.length - totalBytesRead), null);
+            sourcePos += bytesRead;
+            bytesRead = fs.readSync(sourceFd, sourceBuffer, 0, Math.min(16000, fileChunk.length - totalBytesRead), sourcePos);
         }
         fs.closeSync(targetFd);
         fs.closeSync(sourceFd);
@@ -841,6 +974,19 @@ interface FileMetadata {
 }
 
 /**
+ * Holds the additional VPK metadata for v2 paks
+ */
+interface VpkV2Metadata {
+    embedChunkLength: number,
+    chunkHashesLength: number,
+    hashesLength: number,
+    signatureLength: number,
+    treeChecksum: string,
+    chunkHashesChecksum: string,
+    fileChecksum: string,
+}
+
+/**
  * A leaf in the VPK tree
  */
 interface TreeLeaf {
@@ -871,7 +1017,11 @@ interface IndexFromFileResult {
     /** The file index tree for the VPK */
     fileIndexTree: any,
     /** The VPK version number */
-    vpkVersion: number
+    vpkVersion: number,
+    /** The length of the VPK index tree */
+    vpkTreeLength: number,
+    /** The v2 metadata (if VPK is v2) */
+    vpkV2Metadata?: VpkV2Metadata
 }
 
 /**
