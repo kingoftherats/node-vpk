@@ -8,17 +8,24 @@
     "spark-md5": "^3.0.2"
   },
   "devDependencies": {
+    "@jest/globals": "^29.5.0",
     "@types/node": "^18.16.2",
     "@types/spark-md5": "^3.0.2",
     "@typescript-eslint/eslint-plugin": "^5.59.1",
     "@typescript-eslint/parser": "^5.59.1",
+    "jest": "^29.5.0",
+    "ts-jest": "^29.1.0",
     "typescript": "^5.0.4"
   },
   "scripts": {
     "build": "npx tsc",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "jest"
   },
-  "files": ["dist", "LICENSE", "package.json"],
+  "files": [
+    "dist",
+    "LICENSE",
+    "package.json"
+  ],
   "type": "commonjs",
   "main": "dist/index.js",
   "exports": {

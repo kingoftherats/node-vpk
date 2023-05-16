@@ -71,6 +71,10 @@ export class Vpk {
     addFile(file: FileInPak): void {
         const tree: any = (this._tree as any);
 
+        let fixedRelPath: string = file.relPath.trim();
+        if (fixedRelPath === '')
+            fixedRelPath = ' ';
+
         if (this._treeLength === 0)
             this._treeLength = 1;
 
@@ -78,23 +82,29 @@ export class Vpk {
             tree[file.extension] = {};
             this._treeLength += file.extension.length + 2;
         }
-        if (!(file.relPath in tree[file.extension])) {
-            tree[file.extension][file.relPath] = [];
-            this._treeLength += file.relPath.length + 2;
+        if (!(fixedRelPath in tree[file.extension])) {
+            tree[file.extension][fixedRelPath] = [];
+            this._treeLength += fixedRelPath.length + 2;
         }
 
-        (tree[file.extension][file.relPath] as TreeLeaf[]).forEach(leaf => {
+        const leafArr = tree[file.extension][fixedRelPath] as TreeLeaf[];
+        for (let i = 0; i < leafArr.length; i++) {
             //Ensure no duplicate files
-            if (leaf.fileName === file.extlessFileName)
-                throw new Error(`File ${file.relPath}/${file.extlessFileName}.${file.extension} already exists in VPK.`);
-        });
+            const leaf: TreeLeaf = leafArr[i];
+            if (leaf.fileName === file.extlessFileName) {
+                if (fixedRelPath !== ' ')
+                    throw new Error(`File ${fixedRelPath}/${file.extlessFileName}.${file.extension} already exists in VPK.`);
+                else
+                    throw new Error(`File ${file.extlessFileName}.${file.extension} already exists in VPK.`);
+            }
+        }
 
         if (typeof file.dataSource === 'string')
-            tree[file.extension][file.relPath].push({ fileName: file.extlessFileName, absoluteFilePath: file.dataSource } as TreeLeaf);
+            tree[file.extension][fixedRelPath].push({ fileName: file.extlessFileName, absoluteFilePath: file.dataSource } as TreeLeaf);
         else if ((file.dataSource as any)['absolutePath'])
-            tree[file.extension][file.relPath].push({ fileName: file.extlessFileName, fileChunk: (file.dataSource as FileChunk) } as TreeLeaf);
+            tree[file.extension][fixedRelPath].push({ fileName: file.extlessFileName, fileChunk: (file.dataSource as FileChunk) } as TreeLeaf);
         else
-            tree[file.extension][file.relPath].push({ fileName: file.extlessFileName, fileData: file.dataSource } as TreeLeaf);
+            tree[file.extension][fixedRelPath].push({ fileName: file.extlessFileName, fileData: file.dataSource } as TreeLeaf);
 
         this._treeLength += file.extlessFileName.length + 1 + 18; //length of file name + 1 null terminator + 18 bytes of metadata
         this._fileCount += 1;
@@ -110,11 +120,13 @@ export class Vpk {
 
         for(const ext in tree) {
             for (const relPath in tree[ext]) {
-                (tree[ext][relPath] as TreeLeaf[]).forEach(leaf => {
-                    fileArr.push({ extension: ext, relPath: relPath, extlessFileName: leaf.fileName,
+                const leafArr = tree[ext][relPath] as TreeLeaf[]
+                for (let i = 0; i < leafArr.length; i++) {
+                    const leaf: TreeLeaf = leafArr[i];
+                    fileArr.push({ extension: ext, relPath: relPath.trim(), extlessFileName: leaf.fileName,
                         dataSource: (leaf.absoluteFilePath ? leaf.absoluteFilePath : (leaf.fileChunk ? leaf.fileChunk : leaf.fileData))
                     } as FileInPak);
-                });
+                }
             }
         }
 
@@ -131,12 +143,20 @@ export class Vpk {
     getFile(extension: string, relPath: string, extlessFileName: string): FileInPak | null {
         const tree: any = (this._tree as any);
 
+        let fixedRelPath: string = relPath.trim();
+        if (fixedRelPath === '')
+            fixedRelPath = ' ';
+
         if (tree[extension]) {
-            if (tree[extension][relPath]){
-                (tree[extension][relPath] as FileInPak[]).forEach(leaf => {
-                    if (leaf.extlessFileName === extlessFileName)
-                        return leaf;
-                });
+            if (tree[extension][fixedRelPath]){
+                const leafArr = tree[extension][fixedRelPath] as TreeLeaf[];
+                for (let i = 0; i < leafArr.length; i++) {
+                    const leaf: TreeLeaf = leafArr[i];
+                    if (leaf.fileName === extlessFileName)
+                        return { extension: extension, relPath: fixedRelPath.trim(), extlessFileName: leaf.fileName,
+                            dataSource: (leaf.absoluteFilePath ? leaf.absoluteFilePath : (leaf.fileChunk ? leaf.fileChunk : leaf.fileData))
+                        } as FileInPak;
+                }
             }
         }
 
@@ -152,25 +172,29 @@ export class Vpk {
     removeFile(extension: string, relPath: string, extlessFileName: string): void {
         const tree: any = (this._tree as any);
 
+        let fixedRelPath: string = relPath.trim();
+        if (fixedRelPath === '')
+            fixedRelPath = ' ';
+
         if (tree[extension]) {
-            if (tree[extension][relPath]){
-                const fileArr = tree[extension][relPath] as FileInPak[];
+            if (tree[extension][fixedRelPath]){
+                const leafArr = tree[extension][fixedRelPath] as TreeLeaf[];
                 let targetIndex: number = -1;
-                for (let i = 0; i < fileArr.length; i++) {
-                    if (fileArr[i].extlessFileName === extlessFileName) {
+                for (let i = 0; i < leafArr.length; i++) {
+                    if (leafArr[i].fileName === extlessFileName) {
                         targetIndex = i;
                         break;
                     }
                 }
 
                 if (targetIndex > -1)
-                    fileArr.splice(targetIndex, 1);
+                    leafArr.splice(targetIndex, 1);
             }
         }
     }
 
     /**
-     * Create a return a VPK from a target directory. Note: files without extensions are not supported.
+     * Create and return a VPK from a target directory. Note: files without extensions are not supported.
      * @param absDirPath the absolute path to the target directory
      * @returns a VPK
      */
@@ -184,7 +208,7 @@ export class Vpk {
             if(walkDirPath.length > absDirPath.length)
                 relPath = walkDirPath.substring(absDirPath.length).replace(/^\/*/g, '').replace(/^\\*/g, '');
             else
-                relPath = ' ';
+                relPath = '';
 
             fs.readdirSync(walkDirPath).forEach((f: string) => {
                 const itemPath: string = path.join(walkDirPath, f);
@@ -225,7 +249,7 @@ export class Vpk {
             for (const relPath in fileIndexTree[ext]) {
                 for (let i = 0; i < fileIndexTree[ext][relPath].length; i++) {
                     const leaf = fileIndexTree[ext][relPath][i] as IndexTreeLeaf;
-                    vpk.addFile({ extension: ext, relPath: relPath, extlessFileName: leaf.fileName,
+                    vpk.addFile({ extension: ext, relPath: relPath.trim(), extlessFileName: leaf.fileName,
                         dataSource: { absolutePath: absFilePath, offset: leaf.metadata.archiveOffset, length: leaf.metadata.fileLength } as FileChunk });
                 }
             }
@@ -252,7 +276,7 @@ export class Vpk {
                 for (let i = 0; i < fileIndexTree[ext][relPath].length; i++) {
                     const leaf = fileIndexTree[ext][relPath][i] as IndexTreeLeaf;
                     retArr.push({
-                        relPath: relPath.trim() != '' ? relPath + '/' + leaf.fileName + '.' + ext : leaf.fileName + '.' + ext,
+                        relPath: relPath.trim() !== '' ? relPath + '/' + leaf.fileName + '.' + ext : leaf.fileName + '.' + ext,
                         metadata: leaf.metadata
                     } as IndexEntry);
                 }
@@ -602,7 +626,8 @@ export class Vpk {
         }
         
         const fileArr: FileInPak[] = this.getFiles();
-        fileArr.forEach(file => {
+        for (let i = 0; i < fileArr.length; i++) {
+            const file: FileInPak = fileArr[i];
             const absTargetFilePath: string = path.join(absDirPath, file.relPath.trim(), file.extlessFileName + '.' + file.extension);
             if (typeof file.dataSource === 'string')
                 writeFileFromFile(absTargetFilePath, file.dataSource as string);
@@ -610,7 +635,7 @@ export class Vpk {
                 writeFileFromFileChunk(absTargetFilePath, file.dataSource as FileChunk);
             else
                 writeFileFromBuffer(absTargetFilePath, file.dataSource as Buffer);
-        });
+        }
     }
 }
 
