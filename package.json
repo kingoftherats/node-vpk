@@ -24,7 +24,8 @@
   "files": [
     "dist",
     "LICENSE",
-    "package.json"
+    "package.json",
+    "README.md"
   ],
   "type": "commonjs",
   "main": "dist/index.js",
@@ -32,8 +33,5 @@
     "types": "./dist/index.d.ts",
     "require": "./dist/index.js"
   },
-  "types": "dist/index.d.ts",
-  "engines": {
-    "node": ">=12.19.0"
-  }
+  "types": "dist/index.d.ts"
 }
